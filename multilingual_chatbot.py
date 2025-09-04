@@ -1,20 +1,30 @@
 from langchain.chains import ConversationalRetrievalChain
 from langchain.memory import ConversationBufferMemory
+from langchain_community.chat_message_histories import RedisChatMessageHistory
 from langchain_community.llms import Ollama
-from rag import auto_ingest_data_folder
+from extract import auto_ingest_data_folder
 
 # -----------------------------
 # Setup Memory & LLM
 # -----------------------------
+session_id = "user1-session"
+
+redis_history = RedisChatMessageHistory(
+    url="redis://localhost:6379/0",  
+    session_id=session_id
+)
+
 memory = ConversationBufferMemory(
     memory_key="chat_history",
     input_key="question",   # match the chain input
     output_key="answer",    # match the chain output
+    chat_memory=redis_history,
     return_messages=True
 )
 
 # Ollama LLM (Mistral 7B running locally)
-llm = Ollama(model="mistral")
+llm = Ollama(model="mistral",
+             base_url="http://127.0.0.1:11435")
 
 # Ingest documents
 retriever = auto_ingest_data_folder("data")
