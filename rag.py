@@ -1,47 +1,77 @@
+from langchain.embeddings.base import Embeddings
+from langchain_community.document_loaders import TextLoader, PyPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_community.vectorstores import FAISS
 from sentence_transformers import SentenceTransformer
-import faiss
-import numpy as np
+import os
 
+# -----------------------------
+# Embeddings setup (SentenceTransformers)
+# -----------------------------
+embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
 
-embedder = SentenceTransformer("all-MiniLM-L6-v2")
+class LocalEmbeddings(Embeddings):
+    """Wrapper to make SentenceTransformer compatible with LangChain FAISS"""
+    
+    def embed_documents(self, texts):
+        return embedding_model.encode(texts, convert_to_numpy=True).tolist()
 
-#example
-document = """
-Interview started with my brief introduction including Projects and Competitive Programming profiles. Many candidates copied in the OA, so he asked me to explain all OA questions and approaches orally. I explained my approach on pen and paper, also explained how I reached that solution. He was pretty much convinced that at least I didn't copy or memorized solutions.
-Then he gave me a code snippet in C language and made me identify the errors without running it. It had some syntactical errors and logical ones (like missing base case for Recursive function).
-Then he gave me a simple DSA question on linked list: Remove Duplicates from Sorted List.
-I started with brute force using extra space. Then we discussed the Time and Space Complexity.
-He asked me to optimise it. So I explained to him a two pointer approach of Amortized Time Complexity as O(N) and O(1) Space Complexity.
-He said to implement it. So I had to implement the entire question including building the linked list itself from input, printing the linked list and the solution.
-It passed all test cases in one go without any error. So we moved on to the next question: Given a Target and array of integers find first and last position of Target in the array.
-Again I started with brute force, implemented it (again passed all test cases in one go). We discussed its complexity. Then he just orally asked how could you optimize it. So I explained to him Upper and Lower Bound Concept.
-Interview ended with question from my side.
-"""
+    def embed_query(self, text):
+        return embedding_model.encode([text], convert_to_numpy=True).tolist()[0]
 
+# ✅ instantiate once
+embeddings = LocalEmbeddings()
 
-splitter = RecursiveCharacterTextSplitter(chunk_size=60, chunk_overlap=10)
-chunks = splitter.split_text(document)
-print("Chunks:", chunks)
+# -----------------------------
+# Ingestion Helpers
+# -----------------------------
+def ingest_text(file_path):
+    loader = TextLoader(file_path, encoding="utf-8")
+    documents = loader.load()
+    for doc in documents:
+        doc.metadata["source"] = os.path.basename(file_path)
+    splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=100)  # larger chunks
+    chunks = splitter.split_documents(documents)
+    return FAISS.from_documents(chunks, embeddings)
 
+def ingest_pdf(file_path):
+    loader = PyPDFLoader(file_path)
+    documents = loader.load()
+    for doc in documents:
+        doc.metadata["source"] = os.path.basename(file_path)
+    splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=100)  # larger chunks
+    chunks = splitter.split_documents(documents)
+    return FAISS.from_documents(chunks, embeddings)
 
-embeddings = embedder.encode(chunks, convert_to_numpy=True)
-print("Vector shape:", embeddings.shape)
+# -----------------------------
+# Auto-ingest Folder
+# -----------------------------
+def auto_ingest_data_folder(folder_path="data"):
+    if not os.path.exists(folder_path):
+        raise ValueError(f"❌ Folder not found: {folder_path}")
 
+    files = [f for f in os.listdir(folder_path) if f.endswith((".txt", ".pdf"))]
+    if not files:
+        raise ValueError("❌ No valid .txt or .pdf files found in data folder")
 
-dimension = embeddings.shape[1]
-index = faiss.IndexFlatL2(dimension)
-index.add(embeddings)
+    print(f"📂 Found raw files in {os.path.abspath(folder_path)}: {files}")
 
+    vectorstore = None
+    for fname in files:
+        fpath = os.path.join(folder_path, fname)
+        if fname.endswith(".txt"):
+            print(f"➡️ Ingesting TXT: {fname}")
+            vs = ingest_text(fpath)
+        elif fname.endswith(".pdf"):
+            print(f"➡️ Ingesting PDF: {fname}")
+            vs = ingest_pdf(fpath)
+        else:
+            continue
 
-def retrieve(query, k=2):
-    query_vector = embedder.encode([query], convert_to_numpy=True)
-    distances, indices = index.search(query_vector, k)
-    results = [chunks[i] for i in indices[0]]
-    return results, distances
+        if vectorstore is None:
+            vectorstore = vs
+        else:
+            vectorstore.merge_from(vs)
 
-
-query = "In which language the code snippet was given?"
-results, distances = retrieve(query)
-print("\nQuery:", query)
-print("Retrieved Chunks:", results)
+    print(f"✅ Ingested {len(files)} files: {files}")
+    return vectorstore.as_retriever(search_kwargs={"k": 5})  # fetch more chunks

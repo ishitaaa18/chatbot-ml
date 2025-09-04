@@ -1,58 +1,57 @@
-# multilingual_chatbot.py
-
-from googletrans import Translator
 from langchain.chains import ConversationalRetrievalChain
 from langchain.memory import ConversationBufferMemory
+from langchain_community.llms import Ollama
+from rag import auto_ingest_data_folder
 
-# Initialize translator + memory
-translator = Translator()
-memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
+# -----------------------------
+# Setup Memory & LLM
+# -----------------------------
+memory = ConversationBufferMemory(
+    memory_key="chat_history",
+    input_key="question",   # match the chain input
+    output_key="answer",    # match the chain output
+    return_messages=True
+)
 
-def build_chatbot(retriever, llm):
-    """
-    Build a conversational retrieval chatbot with memory.
-    retriever: FAISS retriever (from rag.py)
-    llm: language model (OpenAI, Mistral via Ollama, etc.)
-    """
-    qa = ConversationalRetrievalChain.from_llm(
-        llm=llm,
-        retriever=retriever,
-        memory=memory
-    )
-    return qa
+# Ollama LLM (Mistral 7B running locally)
+llm = Ollama(model="mistral")
 
-def chatbot_query(query, qa):
-    """
-    Handles multilingual queries:
-    - Detect language
-    - Translate to English
-    - Query retriever + LLM
-    - Translate answer back to original language
-    """
-    # detect + translate to English
-    detected_lang = translator.detect(query).lang
-    query_en = translator.translate(query, src=detected_lang, dest="en").text
-    
-    # run retrieval + generation
-    answer_en = qa({"question": query_en})["answer"]
-    
-    # translate back if needed
-    if detected_lang != "en":
-        answer = translator.translate(answer_en, src="en", dest=detected_lang).text
-    else:
-        answer = answer_en
-    return answer
+# Ingest documents
+retriever = auto_ingest_data_folder("data")
 
-# Example usage (run only if this file is executed directly)
-if __name__ == "__main__":
-    from rag import retriever, llm   # Import your teammate's retriever + llm
-    
-    qa = build_chatbot(retriever, llm)
-    
-    print("Multilingual Chatbot ready! Type 'quit' to exit.")
-    while True:
-        query = input("You: ")
-        if query.lower() in ["quit", "exit"]:
-            break
-        response = chatbot_query(query, qa)
-        print("Bot:", response)
+# Setup Conversational RAG chain
+qa_chain = ConversationalRetrievalChain.from_llm(
+    llm=llm,
+    retriever=retriever,
+    memory=memory,
+    return_source_documents=True,
+    output_key="answer"
+)
+
+# -----------------------------
+# Chat Loop
+# -----------------------------
+print("🌍 Multilingual Chatbot Ready! Type 'quit' to exit.\n")
+
+while True:
+    query = input("You: ")
+    if query.strip().lower() in ["quit", "exit", "bye"]:
+        print("👋 Goodbye!")
+        break
+
+    try:
+        result = qa_chain.invoke({"question": query})
+        answer = result["answer"]
+        sources = [doc.metadata.get("source", "unknown") for doc in result["source_documents"]]
+
+        print(f"🤖 {answer}")
+        if sources:
+            print(f"📖 Sources: {set(sources)}")
+
+        # 🔍 Debug: show retrieved snippets (first 200 chars each)
+        # for doc in result["source_documents"]:
+        #     snippet = doc.page_content[:200].replace("\n", " ")
+        #     print(f"📄 Snippet from {doc.metadata.get('source','?')}: {snippet}...")
+
+    except Exception as e:
+        print(f"⚠️ Error: {e}")
