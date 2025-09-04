@@ -4,6 +4,7 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from sentence_transformers import SentenceTransformer
 import os
+from deep_translator import GoogleTranslator
 
 # -----------------------------
 # Embeddings setup (SentenceTransformers)
@@ -48,6 +49,14 @@ def ingest_pdf_for_colleges(file_path,college_id,db_dir="vectorstores"):
     documents = loader.load()
     for doc in documents:
         doc.metadata["source"] = os.path.basename(file_path)
+        
+    translator = GoogleTranslator(source="auto", target="en")
+    for doc in documents:
+        try:
+            translated_text = translator.translate(doc.page_content)
+            doc.page_content = translated_text
+        except Exception as e:
+            print(f" Translation failed for {file_name}: {e}")    
         
     splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=100)  
     chunks = splitter.split_documents(documents)
