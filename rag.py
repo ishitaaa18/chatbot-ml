@@ -43,6 +43,29 @@ def ingest_pdf(file_path):
     chunks = splitter.split_documents(documents)
     return FAISS.from_documents(chunks, embeddings)
 
+def ingest_pdf_for_colleges(file_path,college_id,db_dir="vectorstores"):
+    loader = PyPDFLoader(file_path)
+    documents = loader.load()
+    for doc in documents:
+        doc.metadata["source"] = os.path.basename(file_path)
+        
+    splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=100)  
+    chunks = splitter.split_documents(documents)
+    
+    os.makedirs(db_dir, exist_ok=True)
+    db_path = os.path.join(db_dir, f"{college_id}_faiss")
+
+    if os.path.exists(db_path):
+        db = FAISS.load_local(db_path, embeddings, allow_dangerous_deserialization=True)  # Load existing DB and add new docs
+        db.add_documents(chunks)
+    else:
+        db = FAISS.from_documents(chunks, embeddings)   # Create new DB
+
+    # Save updated DB
+    db.save_local(db_path)
+    return db.as_retriever(search_kwargs={"k": 5})
+    
+
 # -----------------------------
 # Auto-ingest Folder
 # -----------------------------
