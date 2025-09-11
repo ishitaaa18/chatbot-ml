@@ -6,6 +6,7 @@ from sentence_transformers import SentenceTransformer
 from deep_translator import GoogleTranslator
 from langdetect import detect
 import os
+from typing import Optional
 
 # -----------------------------
 # Embeddings setup (Multilingual LaBSE)
@@ -71,20 +72,32 @@ def ingest_pdf(file_path):
     return FAISS.from_documents(chunks, embeddings)
 
 
-def ingest_pdf_for_colleges(file_path, college_id, db_dir="vectorstores"):
-    """Ingest college PDFs into persistent FAISS DB (per college)."""
+def ingest_pdf_for_colleges(
+    file_path: str,
+    college_id: str,
+    db_dir: str = "vectorstores",
+    k: int = 5,
+    replace: bool = True
+):
+    """
+    Ingest a PDF into a persistent FAISS DB dedicated to a single college.
+    Adds unique metadata so you can later query or delete by college or file.
+    """
     loader = PyPDFLoader(file_path)
     documents = loader.load()
-    for doc in documents:
-        doc.metadata["source"] = os.path.basename(file_path)
+    for idx, doc in enumerate(documents):
+        doc.metadata.update({
+            "source": os.path.basename(file_path),
+            "college_id": college_id,
+            "doc_id": f"{college_id}:{os.path.basename(file_path)}:{idx}"
+        })
 
     documents = _normalize_docs(documents, file_path)
-
     splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=100)
     chunks = splitter.split_documents(documents)
 
-    os.makedirs(db_dir, exist_ok=True)
-    db_path = os.path.join(db_dir, f"{college_id}_faiss")
+    db_path = os.path.join(db_dir, college_id, "faiss_index")
+    os.makedirs(db_path, exist_ok=True)
 
     if os.path.exists(db_path):
         db = FAISS.load_local(db_path, embeddings, allow_dangerous_deserialization=True)
@@ -93,8 +106,47 @@ def ingest_pdf_for_colleges(file_path, college_id, db_dir="vectorstores"):
         db = FAISS.from_documents(chunks, embeddings)
 
     db.save_local(db_path)
-    return db.as_retriever(search_kwargs={"k": 5})
+    return db, db.as_retriever(search_kwargs={"k": k})
 
+
+
+def delete_pdf_for_college(college_id: str, pdf_name: str, db_dir: str = "vectorstores") -> Optional[int]:
+    """
+    Delete every vector chunk belonging to a given PDF from a college's FAISS index.
+
+    Args:
+        college_id : College identifier (matches what you used when ingesting)
+        pdf_name   : Base filename of the PDF to delete (e.g., 'rules.pdf')
+        db_dir     : Parent directory where FAISS indices are stored
+
+    Returns:
+        int : Number of chunks removed, or None if the index doesn't exist.
+    """
+    db_path = os.path.join(db_dir, college_id, "faiss_index")
+    pdf_basename = os.path.basename(pdf_name)
+
+    if not os.path.exists(db_path):
+        print(f"⚠️ No FAISS index found for college '{college_id}'.")
+        return None
+
+    db = FAISS.load_local(db_path, embeddings, allow_dangerous_deserialization=True)
+
+    # Identify chunks whose source matches the PDF name
+    ids_to_delete = [
+        doc_id
+        for doc_id, doc in db.docstore._dict.items()
+        if doc.metadata.get("source") == pdf_basename
+        and doc.metadata.get("college_id") == college_id
+    ]
+
+    if not ids_to_delete:
+        print(f"No chunks found for {pdf_basename}")
+        return 0
+
+    db.index.remove_ids(ids_to_delete)
+    db.save_local(db_path)
+    print(f"✅ Deleted {len(ids_to_delete)} chunks from {pdf_basename}")
+    return len(ids_to_delete)
 
 # -----------------------------
 # Auto-ingest Folder
