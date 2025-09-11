@@ -197,6 +197,10 @@ while True:
     if user_input.lower() in ("quit", "exit", "bye"):
         print("👋 Goodbye!")
         break
+    if user_input.lower() in ("hii","hello"):
+        print("Hello, How can I help you?")
+    if user_input.lower() in ("Thanks","Thank you"):
+        print("You’re very welcome! 🎉 Feel free to ask")
 
     try:
         # Detect language safely
