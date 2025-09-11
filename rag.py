@@ -3,16 +3,17 @@ from langchain_community.document_loaders import TextLoader, PyPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from sentence_transformers import SentenceTransformer
-import os
 from deep_translator import GoogleTranslator
+from langdetect import detect
+import os
 
 # -----------------------------
-# Embeddings setup (Multilingual - LaBSE is better for Hindi/Indian langs)
+# Embeddings setup (Multilingual LaBSE)
 # -----------------------------
 embedding_model = SentenceTransformer("sentence-transformers/LaBSE")
 
 class LocalEmbeddings(Embeddings):
-    """Wrapper to make SentenceTransformer compatible with LangChain FAISS"""
+    """Wrapper to make SentenceTransformer compatible with LangChain FAISS."""
 
     def embed_documents(self, texts):
         return embedding_model.encode(texts, convert_to_numpy=True).tolist()
@@ -20,21 +21,42 @@ class LocalEmbeddings(Embeddings):
     def embed_query(self, text):
         return embedding_model.encode([text], convert_to_numpy=True).tolist()[0]
 
-# ✅ instantiate once
+# ✅ Instantiate once
 embeddings = LocalEmbeddings()
 
 # -----------------------------
-# Ingestion Helpers
+# Helpers
 # -----------------------------
+def _normalize_docs(documents, file_path):
+    """
+    Ensure all docs are in English:
+    - Auto-detect language
+    - Translate to English if not already English
+    """
+    translator = GoogleTranslator(source="auto", target="en")
+    for doc in documents:
+        try:
+            lang = detect(doc.page_content[:200])  # detect based on snippet
+            if lang != "en":
+                translated_text = translator.translate(doc.page_content)
+                doc.page_content = translated_text
+        except Exception as e:
+            print(f"⚠️ Normalization failed for {file_path}: {e}")
+    return documents
+
+
 def ingest_text(file_path):
     loader = TextLoader(file_path, encoding="utf-8")
     documents = loader.load()
     for doc in documents:
         doc.metadata["source"] = os.path.basename(file_path)
 
+    documents = _normalize_docs(documents, file_path)
+
     splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=100)
     chunks = splitter.split_documents(documents)
     return FAISS.from_documents(chunks, embeddings)
+
 
 def ingest_pdf(file_path):
     loader = PyPDFLoader(file_path)
@@ -42,24 +64,21 @@ def ingest_pdf(file_path):
     for doc in documents:
         doc.metadata["source"] = os.path.basename(file_path)
 
+    documents = _normalize_docs(documents, file_path)
+
     splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=100)
     chunks = splitter.split_documents(documents)
     return FAISS.from_documents(chunks, embeddings)
 
+
 def ingest_pdf_for_colleges(file_path, college_id, db_dir="vectorstores"):
+    """Ingest college PDFs into persistent FAISS DB (per college)."""
     loader = PyPDFLoader(file_path)
     documents = loader.load()
     for doc in documents:
         doc.metadata["source"] = os.path.basename(file_path)
 
-    # Translate to English for consistency
-    translator = GoogleTranslator(source="auto", target="en")
-    for doc in documents:
-        try:
-            translated_text = translator.translate(doc.page_content)
-            doc.page_content = translated_text
-        except Exception as e:
-            print(f"⚠️ Translation failed for {file_path}: {e}")
+    documents = _normalize_docs(documents, file_path)
 
     splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=100)
     chunks = splitter.split_documents(documents)
@@ -76,11 +95,12 @@ def ingest_pdf_for_colleges(file_path, college_id, db_dir="vectorstores"):
     db.save_local(db_path)
     return db.as_retriever(search_kwargs={"k": 5})
 
+
 # -----------------------------
 # Auto-ingest Folder
 # -----------------------------
 def auto_ingest_data_folder(folder_path="data"):
-    # Resolve folder path relative to rag.py
+    """Ingest all PDFs/TXT files in a folder into one FAISS retriever."""
     current_dir = os.path.dirname(os.path.abspath(__file__))
     abs_folder_path = os.path.join(current_dir, folder_path)
 
