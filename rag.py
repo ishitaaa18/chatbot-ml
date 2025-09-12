@@ -77,58 +77,32 @@ def ingest_pdf_for_colleges(
     college_id: str,
     db_dir: str = "vectorstores",
     k: int = 5,
-    replace: bool = False
+    replace: bool = True
 ):
     """
-    Ingest a PDF into a FAISS DB dedicated to a single college.
-
-    * Stores each chunk with a unique doc_id so we can avoid duplicates
-      and later delete by college or file.
-    * Will create the FAISS index if it doesn't exist.
-    * If `replace=True`, removes any previous chunks from this PDF first.
+    Ingest a PDF into a persistent FAISS DB dedicated to a single college.
+    Adds unique metadata so you can later query or delete by college or file.
     """
     loader = PyPDFLoader(file_path)
     documents = loader.load()
-    pdf_name = os.path.basename(file_path)
-
-    # Add metadata used for deduplication & deletion
     for idx, doc in enumerate(documents):
         doc.metadata.update({
-            "source": pdf_name,
+            "source": os.path.basename(file_path),
             "college_id": college_id,
-            "doc_id": f"{college_id}:{pdf_name}:{idx}"
+            "doc_id": f"{college_id}:{os.path.basename(file_path)}:{idx}"
         })
 
-    # Normalise + chunk
     documents = _normalize_docs(documents, file_path)
     splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=100)
     chunks = splitter.split_documents(documents)
 
     db_path = os.path.join(db_dir, college_id, "faiss_index")
-    index_file = os.path.join(db_path, "index.faiss")
+    os.makedirs(db_path, exist_ok=True)
 
-    # Load existing index if it exists
-    if os.path.isfile(index_file):
+    if os.path.exists(db_path):
         db = FAISS.load_local(db_path, embeddings, allow_dangerous_deserialization=True)
-
-        # Remove existing chunks of this PDF if replace=True
-        if replace:
-            existing_ids = [
-                doc_id
-                for doc_id, doc in db.docstore._dict.items()
-                if doc.metadata.get("source") == pdf_name
-                and doc.metadata.get("college_id") == college_id
-            ]
-            if existing_ids:
-                db.delete(ids=existing_ids)
-
-        # Skip adding if all doc_ids already exist (prevents duplicates)
-        existing_doc_ids = set(db.docstore._dict.keys())
-        new_chunks = [c for c in chunks if c.metadata["doc_id"] not in existing_doc_ids]
-        if new_chunks:
-            db.add_documents(new_chunks)
+        db.add_documents(chunks)
     else:
-        os.makedirs(db_path, exist_ok=True)
         db = FAISS.from_documents(chunks, embeddings)
 
     db.save_local(db_path)
